@@ -2,15 +2,15 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef } f
 import { supabase, doSignOut } from '../lib/supabase'
 
 /* ================================================================
-   AUTH CONTEXT  —  Driver App
+   AUTH CONTEXT v3 — Driver App
    Same session-persistence strategy as Customer app.
+   All 5 session bugs fixed.
 ================================================================ */
 
 const AuthCtx     = createContext(null)
 const PROFILE_KEY = 'jc_driver_profile_v4'
-const SESSION_KEY = 'jc_driver_session'
 const PROFILE_TTL = 30 * 24 * 60 * 60 * 1000
-const REFRESH_GAP = 60 * 1000
+const REFETCH_GAP = 5 * 60 * 1000
 
 const cache = {
   read() {
@@ -18,44 +18,36 @@ const cache = {
       const raw = localStorage.getItem(PROFILE_KEY)
       if (!raw) return null
       const p = JSON.parse(raw)
+      if (!p?.data || !p?.ts) return null
       if (Date.now() - p.ts > PROFILE_TTL) { localStorage.removeItem(PROFILE_KEY); return null }
       return p
     } catch { return null }
   },
   write(data, userId) {
+    if (!data || !userId) return
     try {
-      localStorage.setItem(PROFILE_KEY, JSON.stringify({
-        data, role: 'driver', userId, ts: Date.now()
-      }))
+      localStorage.setItem(PROFILE_KEY, JSON.stringify({ data, userId, ts: Date.now() }))
     } catch {}
   },
   clear() {
     try {
-      [PROFILE_KEY, 'jc_driver_pos'].forEach(k => localStorage.removeItem(k))
+      ['jc_driver_profile_v4', 'jc_driver_pos']
+        .forEach(k => localStorage.removeItem(k))
     } catch {}
-  },
-  hasValidSession() {
-    try {
-      const raw = localStorage.getItem(SESSION_KEY)
-      if (!raw) return false
-      const s = JSON.parse(raw)
-      const exp = s?.expires_at || s?.session?.expires_at || 0
-      return Date.now() / 1000 < exp + 60
-    } catch { return false }
   }
 }
 
 export function AuthProvider({ children }) {
-  const cached         = cache.read()
-  const hasStoredToken = cache.hasValidSession()
+  const initCache = cache.read()
 
-  const [profile,   setProfile]   = useState(cached?.data || null)
-  const [loading,   setLoading]   = useState(!cached?.data && hasStoredToken)
+  const [profile,   setProfile]   = useState(initCache?.data || null)
+  const [loading,   setLoading]   = useState(false)
   const [oauthUser, setOauthUser] = useState(null)
 
-  const directSetAt = useRef(0)
-  const lastFetchAt = useRef(0)
-  const mounted     = useRef(true)
+  const mounted      = useRef(true)
+  const lastFetchAt  = useRef(0)
+  const directSetAt  = useRef(0)
+  const sessionReady = useRef(false)
 
   useEffect(() => {
     mounted.current = true
@@ -63,112 +55,120 @@ export function AuthProvider({ children }) {
   }, [])
 
   const fetchProfile = useCallback(async (userId, force = false) => {
-    if (!userId) return null
-    if (!force && Date.now() - lastFetchAt.current < REFRESH_GAP) return 'cached'
+    if (!userId || !mounted.current) return null
+    if (!force && Date.now() - lastFetchAt.current < REFETCH_GAP) return 'throttled'
     lastFetchAt.current = Date.now()
 
     try {
-      const { data: dr, error } = await supabase
-        .from('drivers').select('*').eq('id', userId).maybeSingle()
+      const { data, error } = await supabase
+        .from('drivers')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle()
+
       if (!mounted.current) return null
-      if (dr) {
-        cache.write(dr, userId)
-        setProfile(dr)
+      if (data) {
+        cache.write(data, userId)
+        setProfile(data)
         setOauthUser(null)
         setLoading(false)
-        return 'driver'
+        return 'ok'
       }
       if (error) throw error
+      return null
     } catch {
       if (!mounted.current) return null
       const c = cache.read()
-      if (c && c.userId === userId) {
+      if (c?.userId === userId) {
         setProfile(c.data)
         setLoading(false)
-        return 'driver'
+        return 'cache'
       }
+      return null
     }
-    return null
   }, [])
 
   useEffect(() => {
-    const fallback = setTimeout(() => {
-      if (!mounted.current) return
+    const safetyTimer = setTimeout(() => {
+      if (!mounted.current || sessionReady.current) return
+      sessionReady.current = true
       const c = cache.read()
       if (c) { setProfile(c.data); setLoading(false) }
-      else setLoading(false)
-    }, 8000)
+      else { setLoading(false) }
+    }, 12000)
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!mounted.current) return
-      clearTimeout(fallback)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (!mounted.current) return
 
-      switch (event) {
-        case 'INITIAL_SESSION': {
-          if (!session?.user) {
+        switch (event) {
+          case 'INITIAL_SESSION': {
+            clearTimeout(safetyTimer)
+            sessionReady.current = true
+            if (!session?.user) {
+              const c = cache.read()
+              if (c) { setProfile(c.data); setLoading(false) }
+              else { setProfile(null); setLoading(false) }
+              return
+            }
             const c = cache.read()
-            if (c) setLoading(false)
-            else { setProfile(null); setLoading(false) }
-            return
+            if (c?.userId === session.user.id) {
+              setProfile(c.data); setLoading(false)
+              fetchProfile(session.user.id).catch(() => {})
+            } else {
+              const res = await fetchProfile(session.user.id, true)
+              if (!mounted.current) return
+              if (res === null) {
+                if (session.user.app_metadata?.provider === 'google') setOauthUser(session.user)
+                setLoading(false)
+              }
+            }
+            break
           }
-          const c = cache.read()
-          if (c && c.userId === session.user.id) {
-            setProfile(c.data)
-            setLoading(false)
-            fetchProfile(session.user.id).catch(() => {})
-          } else {
-            const r = await fetchProfile(session.user.id, true)
+
+          case 'SIGNED_IN': {
+            if (!session?.user) break
+            if (Date.now() - directSetAt.current < 30000) break
+            const c = cache.read()
+            if (c?.userId === session.user.id && c.data?.name) {
+              setProfile(c.data); setLoading(false); break
+            }
+            lastFetchAt.current = 0
+            const res = await fetchProfile(session.user.id, true)
             if (!mounted.current) return
-            if (r === null) {
+            if (res === null) {
               if (session.user.app_metadata?.provider === 'google') setOauthUser(session.user)
               setLoading(false)
             }
+            break
           }
-          break
-        }
 
-        case 'SIGNED_IN': {
-          if (!session?.user) break
-          if (Date.now() - directSetAt.current < 30000) { setLoading(false); break }
-          const c = cache.read()
-          if (c && c.userId === session.user.id) { setLoading(false); break }
-          const r = await fetchProfile(session.user.id, true)
-          if (!mounted.current) return
-          if (r === null) {
-            if (session.user.app_metadata?.provider === 'google') setOauthUser(session.user)
+          case 'TOKEN_REFRESHED': {
             setLoading(false)
+            if (session?.user) fetchProfile(session.user.id).catch(() => {})
+            break
           }
-          break
-        }
 
-        case 'TOKEN_REFRESHED': {
-          if (!mounted.current) return
-          setLoading(false)
-          if (session?.user) fetchProfile(session.user.id).catch(() => {})
-          break
-        }
+          case 'USER_UPDATED': {
+            if (session?.user) fetchProfile(session.user.id, true).catch(() => {})
+            break
+          }
 
-        case 'USER_UPDATED': {
-          if (session?.user) fetchProfile(session.user.id, true).catch(() => {})
-          break
-        }
+          case 'SIGNED_OUT': {
+            clearTimeout(safetyTimer)
+            cache.clear()
+            directSetAt.current = 0
+            lastFetchAt.current = 0
+            if (mounted.current) { setProfile(null); setOauthUser(null); setLoading(false) }
+            break
+          }
 
-        case 'SIGNED_OUT': {
-          cache.clear()
-          directSetAt.current = 0
-          lastFetchAt.current = 0
-          if (mounted.current) { setProfile(null); setOauthUser(null); setLoading(false) }
-          break
+          default: break
         }
-
-        default: break
       }
-    })
+    )
 
-    return () => {
-      clearTimeout(fallback)
-      subscription.unsubscribe()
-    }
+    return () => { clearTimeout(safetyTimer); subscription.unsubscribe() }
   }, [fetchProfile])
 
   const setProfileDirect = useCallback((data) => {
@@ -186,11 +186,11 @@ export function AuthProvider({ children }) {
   }, [fetchProfile])
 
   const signOut = useCallback(async () => {
-    await doSignOut()
     cache.clear()
     directSetAt.current = 0
     lastFetchAt.current = 0
     if (mounted.current) { setProfile(null); setOauthUser(null); setLoading(false) }
+    await doSignOut()
   }, [])
 
   return (
