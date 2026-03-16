@@ -3,7 +3,10 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
-  build: { target: 'esnext', sourcemap: false },
+  build: {
+    target: 'esnext',
+    sourcemap: false,
+  },
   plugins: [
     react(),
     VitePWA({
@@ -15,44 +18,23 @@ export default defineConfig({
         short_name: 'JC Captain',
         description: 'Jaldi Chalo driver app - accept and complete rides',
         theme_color: '#16A34A',
-        background_color: '#16A34A',
+        background_color: '#ffffff',
         display: 'standalone',
-        display_override: ['standalone', 'fullscreen'],
         orientation: 'portrait',
-        start_url: '/?source=pwa',
+        start_url: '/',
         scope: '/',
-        id: 'jaldichalo-driver-pwa',
         icons: [
-          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-          { src: 'icons/icon.svg',     sizes: 'any',     type: 'image/svg+xml', purpose: 'any' }
         ],
         categories: ['travel', 'transportation'],
-        prefer_related_applications: false
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,ico}'],
+        globPatterns: ['**/*.{js,css,html,svg,png}'],
         cleanupOutdatedCaches: true,
         skipWaiting: true,
         clientsClaim: true,
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/.*\.supabase\.co\/.*/i,
-            handler: 'NetworkFirst',
-            options: { cacheName: 'supabase-api', expiration: { maxEntries: 50, maxAgeSeconds: 60 } }
-          },
-          {
-            urlPattern: /^https:\/\/router\.project-osrm\.org\/.*/i,
-            handler: 'NetworkFirst',
-            options: { cacheName: 'osrm-routing', expiration: { maxEntries: 50, maxAgeSeconds: 300 } }
-          },
-          {
-            urlPattern: /^https:\/\/basemaps\.cartocdn\.com\/.*/i,
-            handler: 'CacheFirst',
-            options: { cacheName: 'map-tiles', expiration: { maxEntries: 300, maxAgeSeconds: 86400 } }
-          }
-        ]
       }
     })
   ]
