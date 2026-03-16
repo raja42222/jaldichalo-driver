@@ -10,6 +10,7 @@ import { DriverFareCard } from '../components/ETAPanel'
 import { SafetyBar, SafetyAlertToast, useSafetyAlerts, ReportModal, EmergencyContactsScreen } from '../components/SafetyPanel'
 import { SkeletonProfile, SkeletonEarnings, SkeletonWallet, SkeletonMap } from '../components/Skeleton'
 import CancelRideModal from '../components/CancelRideModal'
+import DriverDemo from '../components/DriverDemo'
 
 const MIN_BAL     = 50
 const COUNTDOWN_S = 15
@@ -93,6 +94,7 @@ export default function DriverHome() {
   const [showCancelModal, setShowCancelModal] = useState(false)
   const [cancelStats, setCancelStats] = useState(null)
   const [mapReady,    setMapReady]   = useState(false)
+  const [showDemo,    setShowDemo]   = useState(false)
   const [rechAmt,   setRA]      = useState(200)
   const [safetyAlert, setSA]    = useState(null)
   const [showReport,  setSR]    = useState(false)
@@ -151,10 +153,10 @@ export default function DriverHome() {
         // Update profile in AuthContext cache directly
         setProfileDirect({ ...profile, ...updated })
         // Show toast for status changes
-        if (updated.status === 'approved' && profile?.status !== 'approved') {
+        if (updated.status?.toLowerCase() === 'approved' && profile?.status?.toLowerCase() !== 'approved') {
           showToast('🎉 Your application has been approved! You can now go online.')
         }
-        if (updated.status === 'rejected' && profile?.status !== 'rejected') {
+        if (updated.status?.toLowerCase() === 'rejected' && profile?.status !== 'rejected') {
           showToast('❌ Your application was rejected. Please contact support.')
         }
       })
@@ -290,7 +292,7 @@ export default function DriverHome() {
   async function toggleOnline() {
     const next = !online
     // Block pending/rejected drivers
-    if (next && profile?.status !== 'approved') {
+    if (next && profile?.status?.toLowerCase() !== 'approved') {
       showToast('Your application is under review. You can go online once approved.')
       return
     }
@@ -702,7 +704,7 @@ export default function DriverHome() {
                         ? 'Go online to start receiving ride requests'
                         : 'Your documents are under review. You will be notified on WhatsApp once approved (within 24 hours).'}
                     </div>
-                    {profile?.status!=='approved' && (
+                    {profile?.status?.toLowerCase()!=='approved' && (
                       <div style={{ background:'#FFF7ED', border:'1px solid #FED7AA', borderRadius:14, padding:'12px 16px', marginBottom:16, fontSize:13, color:'#92400E', textAlign:'left', lineHeight:1.6 }}>
                         <div style={{ fontWeight:700, marginBottom:4 }}>Documents submitted:</div>
                         {[{l:'Driving Licence',ok:!!profile?.license_url},{l:'Vehicle Plate Photo',ok:!!profile?.vehicle_plate_url},{l:'RC Book',ok:!!profile?.rc_url}].map(d=>(
@@ -712,9 +714,28 @@ export default function DriverHome() {
                         ))}
                       </div>
                     )}
-                    <button onClick={toggleOnline} disabled={!!lowBal||profile?.status!=='approved'}
-                      style={{ width:'100%', padding:'18px', borderRadius:18, background:lowBal||profile?.status!=='approved'?'var(--bg3)':'linear-gradient(135deg,#22C55E,#16A34A)', color:lowBal||profile?.status!=='approved'?'var(--text3)':'#fff', fontSize:18, fontWeight:900, border:'none', cursor:'pointer', fontFamily:'inherit', letterSpacing:'0.02em', boxShadow:lowBal?'none':'0 8px 28px rgba(34,197,94,0.4)' }}>
-                      {profile?.status!=='approved' ? 'Awaiting Approval' : lowBal ? 'Recharge Wallet First' : 'GO ONLINE'}
+                    {/* Hot zones heatmap */}
+                    <button onClick={() => setShowDemo(true)}
+                      style={{ width:'100%', marginBottom:10, padding:'12px', borderRadius:14, border:'1.5px solid rgba(239,68,68,0.3)', background:'rgba(239,68,68,0.06)', color:'#EF4444', fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+                      🔥 View Hot Zones & Demo
+                    </button>
+
+                    <button onClick={toggleOnline} disabled={!!lowBal||profile?.status?.toLowerCase()!=='approved'}
+                      style={{ width:'100%', padding:'18px', borderRadius:18, background:lowBal||profile?.status?.toLowerCase()!=='approved'?'var(--bg3)':'linear-gradient(135deg,#22C55E,#16A34A)', color:lowBal||profile?.status?.toLowerCase()!=='approved'?'var(--text3)':'#fff', fontSize:18, fontWeight:900, border:'none', cursor:'pointer', fontFamily:'inherit', letterSpacing:'0.02em', boxShadow:lowBal?'none':'0 8px 28px rgba(34,197,94,0.4)' }}>
+                      {profile?.status?.toLowerCase()!=='approved' ? 'Awaiting Approval' : lowBal ? 'Recharge Wallet First' : 'GO ONLINE'}
+                    </button>
+
+                    {/* Demo mode button */}
+                    <button onClick={() => setShowDemo(true)}
+                      style={{ width:'100%', marginTop:10, padding:'13px', borderRadius:14, border:'1.5px solid rgba(255,95,31,0.4)', background:'rgba(255,95,31,0.06)', color:'var(--brand)', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+                      🎮 Preview Demo Ride
+                    </button>
+
+                    {/* Logout always accessible even when pending */}
+                    <button onClick={signOut}
+                      style={{ width:'100%', marginTop:10, padding:'13px', borderRadius:14, border:'1.5px solid rgba(220,38,38,0.3)', background:'transparent', color:'var(--red)', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+                      <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                      Sign Out
                     </button>
                   </div>
                 ) : (
