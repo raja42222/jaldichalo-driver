@@ -69,7 +69,7 @@ function pushScreen(name) { window.history.pushState({ jcScreen: name }, '') }
 function replaceScreen(name) { window.history.replaceState({ jcScreen: name }, '') }
 
 export default function DriverHome() {
-  const { profile, signOut } = useAuth()
+  const { profile, signOut, refreshProfile, setProfileDirect } = useAuth()
 
   const [tab,       setTab]     = useState('drive')
   const [online,    setOnline]  = useState(false)
@@ -135,7 +135,51 @@ export default function DriverHome() {
         .then(({ data }) => { if (data) setCancelStats(data) })
         .catch(() => {})
     }
-  }, [profile]) // eslint-disable-line // eslint-disable-line
+  }, [profile]) // eslint-disable-line
+
+  /* === Realtime: Driver profile updates (approval, rating) === */
+  useEffect(() => {
+    if (!profile?.id) return
+    // Subscribe to own driver row changes
+    const ch = supabase.channel(`dr-profile-${profile.id}`)
+      .on('postgres_changes', {
+        event:  'UPDATE',
+        schema: 'public',
+        table:  'drivers',
+        filter: `id=eq.${profile.id}`,
+      }, ({ new: updated }) => {
+        // Update profile in AuthContext cache directly
+        setProfileDirect({ ...profile, ...updated })
+        // Show toast for status changes
+        if (updated.status === 'approved' && profile?.status !== 'approved') {
+          showToast('🎉 Your application has been approved! You can now go online.')
+        }
+        if (updated.status === 'rejected' && profile?.status !== 'rejected') {
+          showToast('❌ Your application was rejected. Please contact support.')
+        }
+      })
+      .subscribe()
+
+    // Also poll every 30s when pending (for clients where realtime might not work)
+    let pollTimer = null
+    if (profile?.status === 'pending') {
+      pollTimer = setInterval(async () => {
+        const { data } = await supabase.from('drivers')
+          .select('status, rating, is_online').eq('id', profile.id).single()
+        if (data && data.status !== profile.status) {
+          setProfileDirect({ ...profile, ...data })
+          if (data.status === 'approved') {
+            showToast('🎉 Application approved! You can now go online.')
+          }
+        }
+      }, 30000)
+    }
+
+    return () => {
+      supabase.removeChannel(ch)
+      if (pollTimer) clearInterval(pollTimer)
+    }
+  }, [profile?.id, profile?.status]) // eslint-disable-line // eslint-disable-line
   useEffect(() => { if (online) startGPS(); else stopGPS(); return stopGPS }, [online]) // eslint-disable-line
 
   useEffect(() => {
@@ -450,9 +494,9 @@ export default function DriverHome() {
         </button>
         <div style={{ flex:1 }}>
           <div className="t-h3">{pax?.name || 'Passenger'}</div>
-          <div className="t-tiny t-muted">{pax?.phone}</div>
+          <div className="t-tiny t-muted">Passenger · In-app chat</div>
         </div>
-        <a href={`tel:${pax?.phone}`} className="btn btn-icon" style={{ background:'#ECFDF5', color:'var(--green)' }}><PhoneIcon /></a>
+        <button onClick={() => setChat(true)} className="btn btn-icon" style={{ background:'#ECFDF5', color:'var(--green)' }}><ChatIcon /></button>
       </div>
       <div className="scroll" style={{ flex:1, padding:16, display:'flex', flexDirection:'column', gap:10 }}>
         {msgs.length === 0 && <div style={{ textAlign:'center', padding:'48px 0' }}><div style={{ fontSize:36, marginBottom:10 }}>💬</div><div className="t-body t-muted">Send a message</div></div>}
@@ -729,7 +773,7 @@ export default function DriverHome() {
                     </div>
                     <div style={{ flex:1 }}>
                       <div style={{ fontWeight:800, fontSize:14 }}>{active.rider_name || pax.name}</div>
-                      <div style={{ fontSize:12, color:'var(--text3)' }}>{active.rider_phone || pax.phone}</div>
+                      <div style={{ fontSize:12, color:'var(--text3)' }}>Tap Chat to message</div>
                     </div>
                     <span className="badge badge-green">On way</span>
                   </div>
@@ -742,7 +786,7 @@ export default function DriverHome() {
                 </div>
 
                 <div style={{ display:'flex', gap:8, marginBottom:10 }}>
-                  <a href={`tel:${active.rider_phone || pax.phone}`} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--green)' }}><PhoneIcon /> Call</a>
+                  <button onClick={() => setChat(true)} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--brand)' }}><ChatIcon /> Chat</button>
                   <button className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12 }} onClick={() => setChat(true)}><ChatIcon /> Chat</button>
                   <a href={`https://wa.me/${(active.rider_phone||pax.phone)?.replace(/\D/g,'')}`} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'#25D366' }}><WaIcon /></a>
                 </div>
@@ -799,7 +843,7 @@ export default function DriverHome() {
                 />
                 <div style={{ display:'flex', gap:8, marginBottom:10 }}>
                   <button className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12 }} onClick={() => setChat(true)}><ChatIcon /> Chat</button>
-                  <a href={`tel:${active.rider_phone || pax?.phone}`} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--green)' }}><PhoneIcon /> Call</a>
+                  <button onClick={() => setChat(true)} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--brand)' }}><ChatIcon /> Chat</button>
                 </div>
                 <button onClick={endRide}
                   style={{ width:'100%', padding:'16px', borderRadius:16, background:'linear-gradient(135deg,#DC2626,#EF4444)', color:'#fff', fontWeight:900, fontSize:16, border:'none', cursor:'pointer', fontFamily:'inherit', boxShadow:'0 6px 22px rgba(220,38,38,0.35)' }}>
