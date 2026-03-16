@@ -585,8 +585,9 @@ export default function DriverHome() {
               driverCoords={gps}
               pickupCoords={active ? [active.pickup_lat, active.pickup_lng] : null}
               dropCoords={active ? [active.drop_lat, active.drop_lng] : null}
-              showRoute={!!active}
+              showRoute={rideState==='riding' || rideState==='active'}
               zoom={15}
+              bottomPad={60}
               onReady={() => setMapReady(true)}
             />
             <SkeletonMap visible={!mapReady} />

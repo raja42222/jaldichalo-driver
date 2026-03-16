@@ -21,7 +21,7 @@ export default function GoogleSetup() {
       const { error:rpcErr } = await supabase.rpc('upsert_driver', {
         p_id:oauthUser.id, p_name:name.trim(), p_phone:`+91${phone}`,
         p_email:email||null, p_vehicle_type:vehicle,
-        p_vehicle_model:'', p_vehicle_number:'', p_method:'google'
+        p_vehicle_model:'', p_vehicle_number:''
       })
       if (rpcErr) {
         const { error:insErr } = await supabase.from('drivers').upsert({
