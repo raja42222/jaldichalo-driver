@@ -2,7 +2,7 @@
 
 :root {
   /* Jaldi Chalo Brand */
-  --brand: #16A34A;           /* Jaldi Chalo Captain green */
+  --brand: #16A34A;           /* deep saffron-orange */
   --brand2: #22C55E;
   --brand-light: #ECFDF5;
   --brand-dim: rgba(22,163,74,0.1);
@@ -155,7 +155,7 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 }
 .input:focus {
   border-color: var(--brand); background: #fff;
-  box-shadow: 0 0 0 3px rgba(22,163,74,0.10);
+  box-shadow: 0 0 0 3px rgba(255,95,31,0.10);
 }
 .input::placeholder { color: var(--text4); }
 
@@ -284,7 +284,7 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 }
 .otp-box:focus {
   border-color: var(--brand); background: #fff;
-  box-shadow: 0 0 0 3px rgba(22,163,74,0.12);
+  box-shadow: 0 0 0 3px rgba(255,95,31,0.12);
 }
 
 /* -- CHAT BUBBLES -- */
@@ -332,7 +332,7 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 
 /* -- SPINNERS -- */
 .spinner {
-  width: 30px; height: 30px; border: 3px solid rgba(22,163,74,0.15);
+  width: 30px; height: 30px; border: 3px solid rgba(255,95,31,0.15);
   border-top-color: var(--brand); border-radius: 50%;
   animation: spin 0.75s linear infinite;
 }
@@ -414,3 +414,12 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   width: 90px; height: 90px; border-radius: 50%;
   background: rgba(255,255,255,0.08);
 }
+
+.map-btn {
+  width: 46px; height: 46px; border-radius: 50%;
+  background: #fff; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 3px 14px rgba(0,0,0,0.22); color: var(--text);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.map-btn:active { transform: scale(0.90); box-shadow: 0 1px 6px rgba(0,0,0,0.15); }
