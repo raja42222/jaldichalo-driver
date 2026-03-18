@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { isDriverNearPickup, isValidRideTransition, checkRateLimit } from '../lib/security'
 import { useAuth } from '../context/AuthContext'
@@ -23,6 +23,25 @@ const WaIcon    = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="cu
 const OutIcon   = () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
 const ChevR     = () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
 const NavIcon   = () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+
+/* -- Offline detection -- */
+function useOnlineStatus() {
+  const [online, setOnline] = React.useState(navigator.onLine)
+  React.useEffect(() => {
+    const on  = () => setOnline(true)
+    const off = () => setOnline(false)
+    window.addEventListener('online', on); window.addEventListener('offline', off)
+    return () => { window.removeEventListener('online',on); window.removeEventListener('offline',off) }
+  }, [])
+  return online
+}
+function OfflineBannerD() {
+  const online = useOnlineStatus()
+  if (online) return null
+  return <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:999, background:'#EF4444', color:'#fff', textAlign:'center', padding:'10px 16px', fontSize:13, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+    <span>📵</span> No internet — cannot receive ride requests
+  </div>
+}
 
 function Toast({ msg }) {
   if (!msg) return null
@@ -150,9 +169,7 @@ export default function DriverHome() {
         table:  'drivers',
         filter: `id=eq.${profile.id}`,
       }, ({ new: updated }) => {
-        // Update profile in AuthContext cache directly
         setProfileDirect({ ...profile, ...updated })
-        // Show toast for status changes
         if (updated.status?.toLowerCase() === 'approved' && profile?.status?.toLowerCase() !== 'approved') {
           showToast('🎉 Your application has been approved! You can now go online.')
         }
@@ -162,15 +179,15 @@ export default function DriverHome() {
       })
       .subscribe()
 
-    // Also poll every 30s when pending (for clients where realtime might not work)
+    // Poll every 30s when pending as fallback
     let pollTimer = null
-    if (profile?.status === 'pending') {
+    if (profile?.status === 'pending' || profile?.status === 'Pending') {
       pollTimer = setInterval(async () => {
         const { data } = await supabase.from('drivers')
           .select('status, rating, is_online').eq('id', profile.id).single()
-        if (data && data.status !== profile.status) {
+        if (data && data.status?.toLowerCase() !== profile.status?.toLowerCase()) {
           setProfileDirect({ ...profile, ...data })
-          if (data.status === 'approved') {
+          if (data.status?.toLowerCase() === 'approved') {
             showToast('🎉 Application approved! You can now go online.')
           }
         }
@@ -178,10 +195,39 @@ export default function DriverHome() {
     }
 
     return () => {
-      supabase.removeChannel(ch)
+      supabase.removeChannel(ch)  // ← FIX: was missing unsubscribe
       if (pollTimer) clearInterval(pollTimer)
     }
   }, [profile?.id, profile?.status]) // eslint-disable-line // eslint-disable-line
+  // Always start passive GPS watch (for map display, even when offline)
+  useEffect(() => {
+    if (!navigator.geolocation) return
+    const passiveWatch = navigator.geolocation.watchPosition(
+      pos => {
+        const { latitude:lat, longitude:lng } = pos.coords
+        saveDriverGPS(lat, lng)
+        setGps([lat, lng])
+      },
+      () => {},
+      { enableHighAccuracy:false, maximumAge:30000, timeout:60000 }
+    )
+    // Re-acquire on foreground
+    function onVisible() {
+      if (!document.hidden) {
+        navigator.geolocation.getCurrentPosition(
+          pos => { saveDriverGPS(pos.coords.latitude, pos.coords.longitude); setGps([pos.coords.latitude, pos.coords.longitude]) },
+          () => {},
+          { enableHighAccuracy:true, timeout:8000, maximumAge:0 }
+        )
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      navigator.geolocation.clearWatch(passiveWatch)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, []) // eslint-disable-line
+
   useEffect(() => { if (online) startGPS(); else stopGPS(); return stopGPS }, [online]) // eslint-disable-line
 
   useEffect(() => {
@@ -291,6 +337,11 @@ export default function DriverHome() {
 
   async function toggleOnline() {
     const next = !online
+    // Block going offline during active ride
+    if (!next && active && (rideState === 'active' || rideState === 'riding' || rideState === 'otp')) {
+      showToast('⚠️ You have an active ride. Complete or cancel it before going offline.')
+      return
+    }
     // Block pending/rejected drivers
     if (next && profile?.status?.toLowerCase() !== 'approved') {
       showToast('Your application is under review. You can go online once approved.')
@@ -454,6 +505,21 @@ export default function DriverHome() {
     showToast('Ride complete! Great work.')
   }
 
+  async function ratePassenger(rideId, passengerId, stars) {
+    try {
+      await supabase.from('rides').update({ driver_rating_for_passenger: stars }).eq('id', rideId)
+      // Update passenger avg rating
+      const { data:rides } = await supabase.from('rides')
+        .select('driver_rating_for_passenger')
+        .eq('passenger_id', passengerId)
+        .not('driver_rating_for_passenger', 'is', null)
+      if (rides?.length) {
+        const avg = +(rides.reduce((s,r) => s + r.driver_rating_for_passenger, 0) / rides.length).toFixed(2)
+        await supabase.from('passengers').update({ rating: avg }).eq('id', passengerId).catch(() => {})
+      }
+    } catch {}
+  }
+
   async function sendChat() {
     if (!chatIn.trim() || !active) return
     const msg = chatIn.trim(); setChatIn('')
@@ -521,6 +587,8 @@ export default function DriverHome() {
 
   return (
     <div style={{ height:'100dvh', overflow:'hidden', position:'relative', background:'#e9e5de' }}>
+      {showDemo && <DriverDemo onClose={() => setShowDemo(false)} />}
+      <OfflineBannerD />
       <Toast msg={toast} />
       {safetyAlert && <SafetyAlertToast alert={safetyAlert} onDismiss={() => setSA(null)} />}
       {showReport && active && <ReportModal rideId={active.id} userId={profile.id} role="driver" onClose={() => setSR(false)} />}

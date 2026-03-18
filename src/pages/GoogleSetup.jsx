@@ -39,6 +39,7 @@ export default function GoogleSetup() {
     photo:        { file:null, url:null, uploading:false, done:false },
   })
   const [loading, setLoading] = useState(false)
+  const [phoneAlreadyTaken, setPhoneAlreadyTaken] = useState(false)
   const [error,   setError]   = useState('')
   const [licErr,  setLicErr]  = useState('')
   const [platErr, setPlatErr] = useState('')
@@ -94,7 +95,31 @@ export default function GoogleSetup() {
 
     setLoading(true)
     try {
-      const { error:rpcErr } = await supabase.rpc('upsert_driver', {
+      // -- Layer 1: Check if phone already registered as DRIVER --
+      const { data: drvCheck } = await supabase
+        .from('drivers')
+        .select('id')
+        .eq('phone', `+91${phone}`)
+        .neq('id', oauthUser.id)
+        .maybeSingle()
+      if (drvCheck) {
+        setError('⚠️ This number is already registered as a driver. Please sign in with this number instead.')
+        setPhoneAlreadyTaken(true)
+        setLoading(false); return
+      }
+
+      // -- Layer 2: Check if phone already registered as PASSENGER --
+      const { data: paxCheck } = await supabase
+        .from('passengers')
+        .select('id')
+        .eq('phone', `+91${phone}`)
+        .maybeSingle()
+      if (paxCheck) {
+        setError('⚠️ This number is registered as a customer. You can still register as a driver, but please use a different number, or use the same number to register.')
+        setLoading(false); return
+      }
+
+      const { data:rpcData, error:rpcErr } = await supabase.rpc('upsert_driver', {
         p_id:               oauthUser.id,
         p_name:             name.trim(),
         p_phone:            `+91${phone}`,
@@ -106,7 +131,11 @@ export default function GoogleSetup() {
         p_vehicle_plate_url:docs.vehicle_plate.url,
         p_rc_url:           docs.rc.url || null,
       })
-      if (rpcErr) {
+      if (rpcErr || rpcData?.success === false) {
+        if (rpcData?.error === 'phone_taken') {
+          setError(rpcData.message || 'Phone already registered.')
+          setLoading(false); return
+        }
         const { error:insErr } = await supabase.from('drivers').upsert({
           id:                 oauthUser.id,
           name:               name.trim(),
@@ -238,7 +267,23 @@ export default function GoogleSetup() {
           <DocUpload docKey="rc" label="RC Book (Registration Certificate)" hint="Optional but recommended" />
         </div>
 
-        {error && <div style={{ color:'#DC2626', fontSize:13, marginBottom:14, padding:'10px 14px', background:'#FEF2F2', borderRadius:10 }}>{error}</div>}
+        {error && (
+          <div style={{ marginBottom:14, padding:'12px 14px', background:'#FEF2F2', borderRadius:12, border:'1px solid #FECACA' }}>
+            <div style={{ color:'#DC2626', fontSize:13, fontWeight:600, marginBottom: phoneAlreadyTaken ? 10 : 0 }}>{error}</div>
+            {phoneAlreadyTaken && (
+              <div style={{ display:'flex', gap:8, marginTop:8 }}>
+                <button onClick={() => { setPhoneAlreadyTaken(false); setError(''); setPhone('') }}
+                  style={{ flex:1, padding:'8px', borderRadius:10, border:'1.5px solid #DC2626', background:'transparent', color:'#DC2626', fontWeight:700, fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>
+                  Use different number
+                </button>
+                <button onClick={signOut}
+                  style={{ flex:1, padding:'8px', borderRadius:10, border:'none', background:'#16A34A', color:'#fff', fontWeight:700, fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>
+                  Sign in with phone
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         <button onClick={save} disabled={loading || !canSubmit}
           style={{ width:'100%', padding:'15px', borderRadius:16, background:loading||!canSubmit?'#E0E0E0':'linear-gradient(135deg,#16A34A,#22C55E)', color:loading||!canSubmit?'#999':'#fff', fontWeight:800, fontSize:16, border:'none', cursor:loading||!canSubmit?'default':'pointer', fontFamily:'inherit', marginBottom:10 }}>
