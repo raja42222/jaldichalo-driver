@@ -2,7 +2,7 @@ import { Component } from 'react'
 import { useAuth } from './context/AuthContext'
 import AuthPage from './pages/AuthPage'
 import GoogleSetup from './pages/GoogleSetup'
-import DriverHome from './pages/DriverHome'
+import PassengerApp from './pages/PassengerApp'
 import PWAInstallBanner from './components/PWAInstallBanner'
 import { AppSkeleton } from './components/Skeleton'
 
@@ -17,7 +17,7 @@ class ErrorBoundary extends Component {
         <div style={{ fontWeight:700, fontSize:18, marginBottom:8, textAlign:'center' }}>Something went wrong</div>
         <div style={{ fontSize:13, color:'#888', marginBottom:24, textAlign:'center', lineHeight:1.6 }}>{this.state.err?.message || 'Unexpected error'}</div>
         <button onClick={() => { this.setState({ err:null }); window.location.reload() }}
-          style={{ padding:'14px 28px', background:'linear-gradient(135deg,#22C55E,#16A34A)', color:'#fff', border:'none', borderRadius:14, fontWeight:700, fontSize:15, cursor:'pointer' }}>
+          style={{ padding:'14px 28px', background:'linear-gradient(135deg,#FF5F1F,#FF8C00)', color:'#fff', border:'none', borderRadius:14, fontWeight:700, fontSize:15, cursor:'pointer' }}>
           Reload App
         </button>
       </div>
@@ -26,7 +26,7 @@ class ErrorBoundary extends Component {
 }
 
 function Splash() {
-  return <AppSkeleton isDriver={true} />
+  return <AppSkeleton isDriver={false} />
 }
 
 function AppContent() {
@@ -46,7 +46,7 @@ function AppContent() {
   if (profile) {
     return (
       <ErrorBoundary>
-        <DriverHome />
+        <PassengerApp />
         <PWAInstallBanner />
       </ErrorBoundary>
     )
