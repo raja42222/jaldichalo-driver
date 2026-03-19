@@ -1,56 +1,48 @@
 import { useState, useRef, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import { checkRateLimit, resetRateLimit, IS_DEMO, getDeviceFingerprint } from '../lib/security'
+import { checkRateLimit, resetRateLimit, IS_DEMO, sanitizePhone, sanitizeName, getDeviceFingerprint } from '../lib/security'
 import { useAuth } from '../context/AuthContext'
 
-/* =========================================================
-   Indian phone: starts 6-9, exactly 10 digits
-   License: state code (2 letters) + RTO code (2 digits) + year (4 digits) + number (7 digits)
-   e.g. WB0120201234567 or DL0120181234567
-   We validate format strictly but also check it matches typed number
-========================================================= */
-const isValidPhone     = n => /^[6-9]\d{9}$/.test(n)
-const isValidLicenseNo = n => {
-  const cleaned = n.replace(/[\s\-\/]/g, '').toUpperCase()
-  // Must be 15-16 chars: 2 state + 2 RTO + 4 year + 7 serial
-  // OR simplified: at least 9 chars, starts with 2 letters
-  return cleaned.length >= 9 && /^[A-Z]{2}/.test(cleaned)
-}
-const isValidVehicleNo = n => {
-  // Indian vehicle: XX00XX0000 format (some variation allowed)
-  const cleaned = n.replace(/[\s\-]/g, '').toUpperCase()
-  return cleaned.length >= 6 && /^[A-Z]{2}/.test(cleaned)
-}
+const isValidPhone = n => /^[6-9]\d{9}$/.test(n)
 
-function Inp({ val, set, ph, type='text', mono, autoFocus, onSubmit, uppercase }) {
+function Inp({ val, set, ph, type='text', mono, autoFocus, onSubmit }) {
   return (
     <input type={type} placeholder={ph} value={val} autoFocus={!!autoFocus}
       autoComplete="off" autoCorrect="off" spellCheck={false}
-      autoCapitalize="none"
+      autoCapitalize={type==='email'||mono?'none':'words'}
       enterKeyHint={onSubmit?'done':'next'}
-      onChange={e => set(uppercase ? e.target.value.toUpperCase() : e.target.value)}
-      onKeyDown={e => { if(e.key==='Enter'&&onSubmit){e.preventDefault();onSubmit()} }}
-      style={{ padding:'14px 16px', borderRadius:16, border:`2px solid ${String(val).trim()?'#16A34A':'#E0E0E0'}`, fontSize:15, background:'#fff', outline:'none', fontFamily:'inherit', color:'#111', userSelect:'text', WebkitUserSelect:'text', width:'100%', display:'block', transition:'border-color 0.15s', ...(mono?{letterSpacing:'0.07em',fontWeight:700}:{}) }}
+      onChange={e=>set(e.target.value)}
+      onKeyDown={e=>{if(e.key==='Enter'&&onSubmit){e.preventDefault();onSubmit()}}}
+      style={{ padding:'14px 16px', borderRadius:16, border:`2px solid ${String(val).trim()?'#FF5F1F':'#E0E0E0'}`, fontSize:15, background:'#fff', outline:'none', fontFamily:'inherit', color:'#111', userSelect:'text', WebkitUserSelect:'text', width:'100%', display:'block', transition:'border-color 0.15s', ...(mono?{letterSpacing:'0.07em',fontWeight:700}:{}) }}
     />
   )
 }
 
-async function uploadDoc(file, userId, docKey) {
-  const ext  = file.name.split('.').pop().toLowerCase()
-  const path = `drivers/${userId}/${docKey}_${Date.now()}.${ext}`
-  const { error } = await supabase.storage.from('driver-documents').upload(path, file, { upsert:true })
-  if (error) throw error
-  const { data: { publicUrl } } = supabase.storage.from('driver-documents').getPublicUrl(path)
-  return publicUrl
+function HowrahBridge() {
+  return (
+    <svg viewBox="0 0 400 140" fill="none" style={{width:'100%',maxWidth:440,opacity:0.22}}>
+      <path d="M0 115 Q100 105 200 115 Q300 125 400 115 L400 140 L0 140Z" fill="white" opacity="0.4"/>
+      <rect x="10" y="83" width="380" height="7" rx="2" fill="white"/>
+      <rect x="58" y="22" width="16" height="61" rx="2" fill="white"/>
+      <rect x="326" y="22" width="16" height="61" rx="2" fill="white"/>
+      <rect x="50" y="14" width="32" height="11" rx="2" fill="white"/>
+      <rect x="318" y="14" width="32" height="11" rx="2" fill="white"/>
+      <path d="M66 22 Q130 70 200 85" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+      <path d="M334 22 Q270 70 200 85" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+      {[95,115,135,155,175,195].map(x=><line key={x} x1={x} y1={83} x2={x} y2={65+(x-66)*0.08} stroke="white" strokeWidth="1" opacity="0.6"/>)}
+      {[205,225,245,265,285,305].map(x=><line key={x} x1={x} y1={83} x2={x} y2={65+(334-x)*0.08} stroke="white" strokeWidth="1" opacity="0.6"/>)}
+    </svg>
+  )
 }
 
 async function buildDemoSession(num) {
-  const e = `jcdr${num}@demo.jaldichalo.app`
-  const p = `JaldiDr@${num}#2025`
+  const e = `jc${num}@demo.jaldichalo.app`
+  const p = `Jaldi@${num}#2025`
   const { data:si } = await supabase.auth.signInWithPassword({ email:e, password:p })
   if (si?.session?.user) return { uid:si.session.user.id }
   const { data:su } = await supabase.auth.signUp({ email:e, password:p, options:{ data:{ phone:`+91${num}` } } })
   if (su?.session?.user) return { uid:su.session.user.id }
+  if (su?.user&&!su?.session) return { uid:null, err:'Supabase: turn OFF email confirmations in Auth Settings' }
   return { uid:null, err:'Demo login failed. Please try again.' }
 }
 
@@ -66,36 +58,21 @@ const GoogleIcon = () => (
 export default function AuthPage() {
   const { setProfileDirect } = useAuth()
 
-  const [step,         setStepRaw]    = useState('phone')
-  const [phone,        setPhone]      = useState('')
-  const [channel,      setChannel]    = useState('sms')
-  const [otp,          setOtp]        = useState(['','','','','',''])
-  const [name,         setName]       = useState('')
-  const [email,        setEmail]      = useState('')
-  const [vehicle,      setVehicle]    = useState('bike')
-  const [vehicleModel, setVM]         = useState('')
-  const [vehicleNo,    setVN]         = useState('')
-  const [licenseNo,    setLN]         = useState('')
-  const [plateConfirmed, setPC]       = useState(false)
-  const [licenseConfirmed, setLC]     = useState(false)
-  const [docs, setDocs] = useState({
-    license:     { file:null, url:null, uploading:false, done:false },
-    vehicle_plate:{ file:null, url:null, uploading:false, done:false },
-    rc:          { file:null, url:null, uploading:false, done:false },
-    photo:       { file:null, url:null, uploading:false, done:false },
-  })
-  const [busy,   setBusy]   = useState(false)
-  const [error,  setError]  = useState('')
-  const [licErr, setLicErr] = useState('')
-  const [platErr,setPlatErr]= useState('')
-  const [timer,  setTimer]  = useState(0)
-  const otpRefs  = useRef([])
-  const fileRefs = useRef({})
+  const [step,    setStepRaw] = useState('home')
+  const [phone,   setPhone]   = useState('')
+  const [channel, setChannel] = useState('whatsapp')
+  const [otp,     setOtp]     = useState(['','','','','',''])
+  const [name,    setName]    = useState('')
+  const [email,   setEmail]   = useState('')
+  const [busy,    setBusy]    = useState(false)
+  const [error,   setError]   = useState('')
+  const [timer,   setTimer]   = useState(0)
+  const otpRefs = useRef([])
 
-  const STEPS = ['phone','otp','name','driver-v']
+  const STEPS = ['home','phone','otp','name']
 
   useEffect(() => {
-    window.history.replaceState({ jcStep:'phone' }, '')
+    window.history.replaceState({ jcStep:'home' }, '')
     const onPop = e => { const s=e.state?.jcStep; if(s&&STEPS.includes(s)){setStepRaw(s);setError('')} }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
@@ -111,98 +88,82 @@ export default function AuthPage() {
 
   async function sendOTP() {
     if (!isValidPhone(phone)) { setError('Enter a valid Indian mobile number (starts 6-9, 10 digits)'); return }
+    // Rate limit: max 3 OTP sends per 5 minutes
+    const rl = checkRateLimit(`otp_send_${phone}`, 3, 5 * 60 * 1000)
+    if (!rl.allowed) { setError(`Too many attempts. Try again in ${rl.retryAfterSec}s`); return }
     setError(''); setBusy(true)
     const { error:otpErr } = await supabase.auth.signInWithOtp({ phone:`+91${phone}`, options:{ channel } })
     setBusy(false)
-    if (otpErr&&!otpErr.message?.includes('rate')) { setError(`Failed: ${otpErr.message}`); return }
-    setTimer(30); setError('OTP sent! (Demo: 123456)'); setStep('otp')
+    if (otpErr && !otpErr.message?.includes('rate')) { setError(`Failed to send OTP: ${otpErr.message}`); return }
+    setTimer(60)
+    setError(`OTP sent to your ${channel==='whatsapp'?'WhatsApp':'SMS'}!${IS_DEMO?' (Demo: 123456)':''}`)
+    setStep('otp')
   }
 
   async function verifyOTP() {
     const code = otp.join('')
     if (code.length!==6) { setError('Enter all 6 digits'); return }
+    // Rate limit: max 5 OTP verify attempts per 10 minutes
+    const rl = checkRateLimit(`otp_verify_${phone}`, 5, 10 * 60 * 1000)
+    if (!rl.allowed) { setError(`Too many wrong attempts. Try again in ${rl.retryAfterSec}s`); return }
     setError(''); setBusy(true)
     let uid = null
     const { data, error:ve } = await supabase.auth.verifyOtp({ phone:`+91${phone}`, token:code, type:'sms' })
-    if (!ve&&data?.session?.user) uid = data.session.user.id
-    if (!uid&&code==='123456') {
+    if (!ve && data?.session?.user) { uid = data.session.user.id; resetRateLimit(`otp_verify_${phone}`) }
+    // Demo mode only (development) - disabled in production
+    if (!uid && IS_DEMO && code==='123456') {
       const res = await buildDemoSession(phone)
       if (!res.uid) { setError(res.err||'Login failed.'); setBusy(false); return }
       uid = res.uid
     }
-    if (!uid) { setError('Invalid OTP.'); setBusy(false); return }
-    const { data:ex } = await supabase.from('drivers').select('*').eq('id',uid).maybeSingle()
+    if (!uid) { setError('Invalid OTP. Please try again.'); setBusy(false); return }
+    const { data:ex } = await supabase.from('passengers').select('*').eq('id',uid).maybeSingle()
     if (ex?.name) { setBusy(false); setProfileDirect(ex); return }
     setBusy(false); setStep('name')
   }
 
-  async function saveDriver() {
-    setLicErr(''); setPlatErr(''); setError('')
-    // Validations
-    if (!vehicleModel.trim())     { setError('Enter your vehicle model name'); return }
-    if (!vehicleNo.trim())        { setError('Enter your vehicle plate number'); return }
-    if (!isValidVehicleNo(vehicleNo)) { setError('Enter a valid Indian vehicle number (e.g. WB01AB1234)'); return }
-    if (!licenseNo.trim())        { setLicErr('Enter your driving licence number'); return }
-    if (!isValidLicenseNo(licenseNo)) { setLicErr('Invalid licence format. Example: WB0120201234567'); return }
-    if (!docs.license.done)       { setLicErr('Upload your driving licence photo (front side, number visible)'); return }
-    if (!docs.vehicle_plate.done) { setPlatErr('Upload a photo of your vehicle showing the number plate'); return }
-    // Licence number must be confirmed (user ticked checkbox)
-    if (!licenseConfirmed)        { setLicErr('Confirm that the licence number matches what is shown in your uploaded photo'); return }
-    // Vehicle plate must be confirmed
-    if (!plateConfirmed)          { setPlatErr(`Confirm that the plate number matches: ${vehicleNo.trim().toUpperCase()}`); return }
+  async function loginGoogle() {
+    setError(''); setBusy(true)
+    const { error:err } = await supabase.auth.signInWithOAuth({
+      provider:'google',
+      options:{ redirectTo:`${window.location.origin}/`, queryParams:{ prompt:'select_account' } }
+    })
+    if (err) { setError(err.message); setBusy(false) }
+  }
 
-    setBusy(true)
+  async function savePassenger() {
+    if (!name.trim()) { setError('Enter your name'); return }
+    setError(''); setBusy(true)
     try {
       const { data:{ user }, error:uErr } = await supabase.auth.getUser()
-      if (uErr||!user) { setError('Session expired.'); setBusy(false); return }
-      const { data:paxChk } = await supabase.from('passengers').select('id').eq('id',user.id).maybeSingle()
-      if (paxChk) { setError('This number is a Passenger account. Use Customer app.'); setBusy(false); return }
-
-      const { error:rpcErr } = await supabase.rpc('upsert_driver', {
-        p_id:user.id, p_name:name.trim(), p_phone:`+91${phone}`,
-        p_email:email.trim()||null, p_vehicle_type:vehicle,
-        p_vehicle_model:vehicleModel.trim(),
-        p_vehicle_number:vehicleNo.trim().toUpperCase(),
-        p_license_number:licenseNo.trim().toUpperCase(),
-        p_license_url:docs.license.url||null,
-        p_rc_url:docs.rc.url||null,
-        p_photo_url:docs.photo.url||null,
-        p_method:'phone'
-      })
-      if (rpcErr) {
-        const { error:insErr } = await supabase.from('drivers').upsert({
-          id:user.id, name:name.trim(), phone:`+91${phone}`, email:email.trim()||null,
-          vehicle_type:vehicle, vehicle_model:vehicleModel.trim(),
-          vehicle_number:vehicleNo.trim().toUpperCase(),
-          license_number:licenseNo.trim().toUpperCase(),
-          license_url:docs.license.url||null,
-          vehicle_plate_url:docs.vehicle_plate.url||null,
-          rc_url:docs.rc.url||null,
-          profile_photo_url:docs.photo.url||null,
-          status:'pending', phone_confirmed:true, login_method:'phone'
-        }, { onConflict:'id' })
+      if (uErr||!user) { setError('Session expired. Login again.'); setBusy(false); return }
+      // Check: phone not already registered to another account
+      const { data: phoneCheck } = await supabase
+        .from('passengers')
+        .select('id')
+        .eq('phone', `+91${phone}`)
+        .neq('id', user.id)
+        .maybeSingle()
+      if (phoneCheck) {
+        setError('This phone number is already registered. Please sign in.')
+        setBusy(false); return
+      }
+      const { data:drCheck } = await supabase.from('drivers').select('id').eq('id',user.id).maybeSingle()
+      if (drCheck) { setError('This number is a Driver account. Use Driver app.'); setBusy(false); return }
+      const method = channel==='whatsapp'?'whatsapp':'phone'
+      const deviceId = getDeviceFingerprint()
+      const { data:rpcData, error:rpcErr } = await supabase.rpc('upsert_passenger', { p_id:user.id, p_name:name.trim(), p_phone:`+91${phone}`, p_email:email.trim()||null, p_method:method })
+      if (rpcErr || rpcData?.success === false) {
+        if (rpcData?.error === 'phone_taken') {
+          setError(rpcData.message || 'Phone already registered.')
+          setBusy(false); return
+        }
+        const { error:insErr } = await supabase.from('passengers').upsert({ id:user.id, name:name.trim(), phone:`+91${phone}`, email:email.trim()||null, phone_confirmed:true, login_method:method }, { onConflict:'id' })
         if (insErr) { setError(insErr.message); setBusy(false); return }
       }
       setBusy(false)
-      setProfileDirect({ id:user.id, name:name.trim(), phone:`+91${phone}`, email:email.trim()||null, vehicle_type:vehicle, vehicle_model:vehicleModel.trim(), vehicle_number:vehicleNo.trim().toUpperCase(), status:'pending', is_online:false, rating:5.00, total_rides:0, login_method:'phone', phone_confirmed:true })
+      setProfileDirect({ id:user.id, name:name.trim(), phone:`+91${phone}`, email:email.trim()||null, rating:5.00, total_rides:0, is_active:true, login_method:method, phone_confirmed:true })
     } catch(e) { setError(e.message||'Something went wrong.'); setBusy(false) }
-  }
-
-  async function handleDocUpload(docKey, file) {
-    if (!file) return
-    const maxMB = 10
-    if (file.size > maxMB*1024*1024) { setError(`File too large. Max ${maxMB}MB.`); return }
-    setDocs(prev => ({ ...prev, [docKey]:{ ...prev[docKey], file, uploading:true, done:false } }))
-    try {
-      const { data:{ user } } = await supabase.auth.getUser()
-      const url = await uploadDoc(file, user?.id||'tmp', docKey)
-      setDocs(prev => ({ ...prev, [docKey]:{ file, url, uploading:false, done:true } }))
-    } catch {
-      // Fallback: use base64 locally (storage may not be configured)
-      const reader = new FileReader()
-      reader.onload = ev => setDocs(prev => ({ ...prev, [docKey]:{ file, url:ev.target.result, uploading:false, done:true } }))
-      reader.readAsDataURL(file)
-    }
   }
 
   function otpChange(i, v) {
@@ -216,7 +177,7 @@ export default function AuthPage() {
   const BackIcon = () => <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
 
   const Hdr = ({ title, sub, back }) => (
-    <div style={{ background:'linear-gradient(135deg,#16A34A,#22C55E)', padding:'calc(env(safe-area-inset-top,0px)+14px) 20px 22px', flexShrink:0 }}>
+    <div style={{ background:'linear-gradient(135deg,#FF5F1F,#FF8C00)', padding:'calc(env(safe-area-inset-top,0px)+14px) 20px 22px', flexShrink:0 }}>
       {back&&<button onClick={back} style={{ background:'rgba(255,255,255,0.25)', border:'none', borderRadius:10, width:36, height:36, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', marginBottom:12, color:'#fff' }}><BackIcon/></button>}
       <div style={{ color:'#fff' }}>
         <div style={{ fontSize:23, fontWeight:800 }}>{title}</div>
@@ -226,77 +187,85 @@ export default function AuthPage() {
   )
   const Btn = ({ label, fn, off }) => (
     <button onClick={fn} disabled={off||busy}
-      style={{ padding:'15px', width:'100%', border:'none', borderRadius:16, background:off||busy?'#E0E0E0':'linear-gradient(135deg,#16A34A,#22C55E)', color:off||busy?'#999':'#fff', fontSize:16, fontWeight:800, cursor:off||busy?'default':'pointer', fontFamily:'inherit', transition:'all 0.15s' }}>
+      style={{ padding:'15px', width:'100%', border:'none', borderRadius:16, background:off||busy?'#E0E0E0':'linear-gradient(135deg,#FF5F1F,#FF8C00)', color:off||busy?'#999':'#fff', fontSize:16, fontWeight:800, cursor:off||busy?'default':'pointer', fontFamily:'inherit', transition:'all 0.15s' }}>
       {busy?'Please wait...':label}
     </button>
   )
-  const DocUpload = ({ docKey, label, hint, required }) => (
-    <div style={{ marginBottom:14 }}>
-      <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:5 }}>
-        <div style={{ fontSize:13, fontWeight:700, color:'#555' }}>{label}</div>
-        {required&&<span style={{ fontSize:11, fontWeight:700, color:'#DC2626', background:'#FEF2F2', padding:'1px 6px', borderRadius:6 }}>Required</span>}
+  const Divider = () => (
+    <div style={{ display:'flex', alignItems:'center', gap:12, margin:'20px 0' }}>
+      <div style={{ flex:1, height:1, background:'#E0E0E0' }} />
+      <span style={{ fontSize:13, color:'#aaa', fontWeight:600 }}>or</span>
+      <div style={{ flex:1, height:1, background:'#E0E0E0' }} />
+    </div>
+  )
+
+  /* HOME: choose login method */
+  if (step==='home') return (
+    <div style={pg}>
+      <div style={{ background:'linear-gradient(135deg,#FF5F1F,#FF8C00)', padding:'calc(env(safe-area-inset-top,0px)+20px) 20px 28px', flexShrink:0 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:20 }}>
+          <div style={{ width:52, height:52, borderRadius:16, background:'rgba(255,255,255,0.22)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:26 }}>⚡</div>
+          <div>
+            <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontWeight:700, fontSize:22, color:'#fff' }}>Jaldi Chalo</div>
+            <div style={{ fontSize:12, color:'rgba(255,255,255,0.8)', marginTop:1 }}>Book rides instantly</div>
+          </div>
+        </div>
+        <HowrahBridge />
       </div>
-      {hint&&<div style={{ fontSize:12, color:'#888', marginBottom:6 }}>{hint}</div>}
-      <input ref={el=>fileRefs.current[docKey]=el} type="file" accept="image/*,application/pdf" style={{ display:'none' }} onChange={e=>handleDocUpload(docKey,e.target.files[0])} />
-      <button onClick={()=>fileRefs.current[docKey]?.click()}
-        style={{ width:'100%', padding:'12px 16px', border:`2px dashed ${docs[docKey].done?'#16A34A':required?'#F97316':'#E0E0E0'}`, borderRadius:14, background:docs[docKey].done?'#ECFDF5':required&&!docs[docKey].done?'#FFF7ED':'#F5F5F5', color:docs[docKey].done?'#16A34A':required?'#92400E':'#888', fontWeight:600, fontSize:13, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
-        {docs[docKey].uploading ? '⏳ Uploading...' : docs[docKey].done ? `✓ ${docs[docKey].file?.name||'Uploaded'}` : `📷 ${required?'Upload (Required)':'Upload (Optional)'}`}
-      </button>
-      {docs[docKey].done && docs[docKey].url && docs[docKey].url.startsWith('data:image') && (
-        <img src={docs[docKey].url} alt="preview" style={{ marginTop:8, width:'100%', maxHeight:120, objectFit:'cover', borderRadius:10, border:'1px solid #E0E0E0' }} />
-      )}
+
+      <div style={{ flex:1, overflowY:'auto', padding:'28px 20px' }}>
+        <div style={{ marginBottom:28 }}>
+          <div style={{ fontSize:22, fontWeight:800, marginBottom:4 }}>Welcome to Jaldi Chalo</div>
+          <div style={{ fontSize:14, color:'#888' }}>Sign in to book your ride</div>
+        </div>
+
+        {/* Google */}
+        <button onClick={loginGoogle} disabled={busy}
+          style={{ width:'100%', padding:'15px', border:'2px solid #E0E0E0', borderRadius:16, background:'#fff', display:'flex', alignItems:'center', justifyContent:'center', gap:10, fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit', marginBottom:12, transition:'border-color 0.15s' }}>
+          <GoogleIcon /> Continue with Google
+        </button>
+
+        {/* WhatsApp */}
+        <button onClick={() => { setChannel('whatsapp'); setStep('phone') }}
+          style={{ width:'100%', padding:'15px', border:'2px solid #25D366', borderRadius:16, background:'#F0FDF4', display:'flex', alignItems:'center', justifyContent:'center', gap:10, fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit', marginBottom:12, color:'#16A34A' }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          Continue with WhatsApp
+        </button>
+
+        {/* Mobile */}
+        <button onClick={() => { setChannel('sms'); setStep('phone') }}
+          style={{ width:'100%', padding:'15px', border:'2px solid #E0E0E0', borderRadius:16, background:'#F9F9F9', display:'flex', alignItems:'center', justifyContent:'center', gap:10, fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit', color:'#555' }}>
+          <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18.01"/></svg>
+          Continue with Mobile Number
+        </button>
+
+        {error&&<div style={{ marginTop:16, fontSize:13, color:error.includes('sent')?'#16A34A':'#DC2626', padding:'10px 14px', background:error.includes('sent')?'#ECFDF5':'#FEF2F2', borderRadius:10 }}>{error}</div>}
+
+        <div style={{ textAlign:'center', marginTop:24, fontSize:12, color:'#aaa', lineHeight:1.6 }}>
+          By continuing, you agree to our Terms of Service and Privacy Policy
+        </div>
+      </div>
     </div>
   )
 
   /* PHONE step */
   if (step==='phone') return (
     <div style={pg}>
-      <div style={{ background:'linear-gradient(135deg,#16A34A,#22C55E)', padding:'calc(env(safe-area-inset-top,0px)+20px) 20px 28px', flexShrink:0 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:12 }}>
-          <div style={{ width:52, height:52, borderRadius:16, background:'rgba(255,255,255,0.22)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:26 }}>🛵</div>
-          <div>
-            <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontWeight:700, fontSize:22, color:'#fff' }}>JC Captain</div>
-            <div style={{ fontSize:12, color:'rgba(255,255,255,0.8)', marginTop:1 }}>Earn with Jaldi Chalo</div>
-          </div>
-        </div>
-      </div>
-      <div style={{ flex:1, overflowY:'auto', padding:'24px 20px' }}>
-        <div style={{ marginBottom:24 }}>
-          <div style={{ fontSize:22, fontWeight:800, marginBottom:4 }}>Driver Login</div>
-          <div style={{ fontSize:14, color:'#888' }}>Enter your registered Indian mobile number</div>
-        </div>
-        <button onClick={async()=>{setError('');setBusy(true);const{error:err}=await supabase.auth.signInWithOAuth({provider:'google',options:{redirectTo:`${window.location.origin}/`,queryParams:{prompt:'select_account'}}});if(err){setError(err.message);setBusy(false)}}} disabled={busy}
-          style={{ width:'100%', padding:'14px', border:'2px solid #E0E0E0', borderRadius:16, background:'#fff', display:'flex', alignItems:'center', justifyContent:'center', gap:10, fontSize:14, fontWeight:700, cursor:'pointer', fontFamily:'inherit', marginBottom:14 }}>
-          <GoogleIcon /> Continue with Google
-        </button>
-        <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:14 }}>
-          <div style={{ flex:1, height:1, background:'#E0E0E0' }} />
-          <span style={{ fontSize:12, color:'#aaa', fontWeight:600 }}>or mobile number</span>
-          <div style={{ flex:1, height:1, background:'#E0E0E0' }} />
-        </div>
+      <Hdr title="Enter Mobile Number" sub={`We'll send OTP via ${channel==='whatsapp'?'WhatsApp':'SMS'}`} back={()=>setStep('home')} />
+      <div style={{ flex:1, overflowY:'auto', padding:'28px 20px' }}>
         <div style={{ display:'flex', gap:8, marginBottom:8 }}>
           <div style={{ padding:'14px 16px', background:'#F5F5F5', borderRadius:14, display:'flex', alignItems:'center', gap:8, flexShrink:0, fontSize:15, fontWeight:700 }}>
             <span>🇮🇳</span> +91
           </div>
-          <div style={{ flex:1 }}><Inp val={phone} set={v=>setPhone(v.replace(/\D/g,'').slice(0,10))} ph="10-digit mobile number" type="tel" autoFocus onSubmit={sendOTP} /></div>
-        </div>
-        <div style={{ display:'flex', gap:8, marginBottom:16 }}>
-          {[{id:'sms',l:'SMS'},{id:'whatsapp',l:'WhatsApp'}].map(c=>(
-            <button key={c.id} onClick={()=>setChannel(c.id)}
-              style={{ flex:1, padding:'10px', borderRadius:12, border:`2px solid ${channel===c.id?'#16A34A':'#E0E0E0'}`, background:channel===c.id?'#ECFDF5':'#fff', color:channel===c.id?'#16A34A':'#888', fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:'inherit', transition:'all 0.15s' }}>
-              {c.l}
-            </button>
-          ))}
+          <div style={{ flex:1 }}><Inp val={phone} set={v=>setPhone(v.replace(/\D/g,''))} ph="10-digit number" type="tel" autoFocus onSubmit={sendOTP} /></div>
         </div>
         {error&&<div style={{ fontSize:13, color:error.includes('sent')?'#16A34A':'#DC2626', marginBottom:14, padding:'10px 14px', background:error.includes('sent')?'#ECFDF5':'#FEF2F2', borderRadius:10 }}>{error}</div>}
-        <Btn label="Send OTP ->" fn={sendOTP} off={phone.length!==10||!isValidPhone(phone)} />
-        <div style={{ textAlign:'center', marginTop:16, fontSize:12, color:'#aaa', lineHeight:1.6 }}>
-          Only approved Jaldi Chalo captains can login here
-        </div>
+        <Btn label={`Send OTP via ${channel==='whatsapp'?'WhatsApp':'SMS'} ->`} fn={sendOTP} off={phone.length!==10} />
       </div>
     </div>
   )
 
+  /* OTP step */
   if (step==='otp') return (
     <div style={pg}>
       <Hdr title="Verify Number" sub={`Code sent to +91 ${phone}`} back={()=>setStep('phone')} />
@@ -304,7 +273,7 @@ export default function AuthPage() {
         <div style={{ display:'flex', gap:10, justifyContent:'center', marginBottom:20 }}>
           {otp.map((d,i)=>(
             <input key={i} ref={el=>otpRefs.current[i]=el}
-              style={{ width:46, height:58, textAlign:'center', fontSize:24, fontWeight:900, background:'#F5F5F5', border:`2px solid ${d?'#16A34A':'#E0E0E0'}`, borderRadius:14, outline:'none', fontFamily:'inherit', color:'#111', userSelect:'text', WebkitUserSelect:'text' }}
+              style={{ width:46, height:58, textAlign:'center', fontSize:24, fontWeight:900, background:'#F5F5F5', border:`2px solid ${d?'#FF5F1F':'#E0E0E0'}`, borderRadius:14, outline:'none', fontFamily:'inherit', color:'#111', userSelect:'text', WebkitUserSelect:'text', transition:'border-color 0.15s' }}
               value={d} maxLength={1} inputMode="numeric"
               onChange={e=>otpChange(i,e.target.value)} onKeyDown={e=>otpKey(i,e)}
             />
@@ -313,116 +282,25 @@ export default function AuthPage() {
         {error&&<div style={{ fontSize:13, color:error.includes('sent')?'#16A34A':'#DC2626', marginBottom:14, padding:'10px 14px', background:error.includes('sent')?'#ECFDF5':'#FEF2F2', borderRadius:10, textAlign:'center' }}>{error}</div>}
         <Btn label="Verify OTP ->" fn={verifyOTP} off={otp.join('').length!==6} />
         <div style={{ textAlign:'center', marginTop:18 }}>
-          {timer>0?<span style={{ fontSize:13, color:'#888' }}>Resend in {timer}s</span>
-            :<button onClick={()=>{setOtp(['','','','','','']);setStep('phone')}} style={{ fontSize:13, color:'#16A34A', background:'none', border:'none', fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Change number / Resend</button>}
+          {timer>0 ? <span style={{ fontSize:13, color:'#888' }}>Resend in {timer}s</span>
+            : <button onClick={()=>{setOtp(['','','','','','']);setStep('phone')}} style={{ fontSize:13, color:'#FF5F1F', background:'none', border:'none', fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Resend / Change number</button>
+          }
         </div>
       </div>
     </div>
   )
 
+  /* NAME step */
   if (step==='name') return (
     <div style={pg}>
-      <Hdr title="Your Details" sub="Tell us about yourself" back={()=>setStep('otp')} />
-      <div style={{ flex:1, overflowY:'auto', padding:'24px 20px' }}>
+      <Hdr title="Create Account" sub="Just your name to get started" back={()=>setStep('otp')} />
+      <div style={{ flex:1, overflowY:'auto', padding:'28px 20px' }}>
         <div style={{ display:'flex', flexDirection:'column', gap:12, marginBottom:18 }}>
           <Inp val={name} set={setName} ph="Your full name" autoFocus />
           <Inp val={email} set={setEmail} ph="Email (optional)" type="email" />
         </div>
         {error&&<div style={{ color:'#DC2626', fontSize:13, marginBottom:14, padding:'10px 14px', background:'#FEF2F2', borderRadius:10 }}>{error}</div>}
-        <Btn label="Next: Vehicle Details ->" fn={()=>{if(!name.trim()){setError('Enter your name');return};setError('');setStep('driver-v')}} off={!name.trim()} />
-      </div>
-    </div>
-  )
-
-  if (step==='driver-v') return (
-    <div style={pg}>
-      <Hdr title="Vehicle & Documents" sub="Required to start accepting rides" back={()=>setStep('name')} />
-      <div style={{ flex:1, overflowY:'auto', padding:'20px 20px 40px' }}>
-
-        {/* Vehicle type */}
-        <div style={{ fontSize:13, fontWeight:700, marginBottom:8, color:'#555' }}>Vehicle Type *</div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16 }}>
-          {[{id:'bike',e:'🏍️',l:'Bike'},{id:'auto',e:'🛺',l:'Auto'},{id:'cab',e:'🚗',l:'Cab Non-AC'},{id:'cab-ac',e:'❄️',l:'Cab AC'}].map(v=>(
-            <button key={v.id} onClick={()=>setVehicle(v.id)}
-              style={{ padding:'14px 10px', borderRadius:14, border:`2px solid ${vehicle===v.id?'#16A34A':'#E0E0E0'}`, background:vehicle===v.id?'#ECFDF5':'#fff', cursor:'pointer', fontFamily:'inherit', transition:'all 0.15s', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
-              <span style={{ fontSize:28 }}>{v.e}</span>
-              <span style={{ fontSize:13, fontWeight:700, color:vehicle===v.id?'#16A34A':'#555' }}>{v.l}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* Vehicle details */}
-        <div style={{ fontSize:13, fontWeight:700, marginBottom:8, color:'#555' }}>Vehicle Details *</div>
-        <div style={{ display:'flex', flexDirection:'column', gap:10, marginBottom:16 }}>
-          <div>
-            <Inp val={vehicleModel} set={setVM} ph="Vehicle model (e.g. Honda Activa 6G)" />
-          </div>
-          <div>
-            <Inp val={vehicleNo} set={v=>setVN(v.replace(/\s/g,'').toUpperCase())} ph="Number plate (e.g. WB01AB1234)" mono uppercase />
-            <div style={{ fontSize:11, color:'#888', marginTop:4 }}>Enter exactly as shown on your number plate</div>
-          </div>
-        </div>
-
-        {/* Vehicle plate photo - REQUIRED */}
-        <div style={{ background:'#FFF7ED', border:'1px solid #FED7AA', borderRadius:12, padding:'12px 14px', marginBottom:12 }}>
-          <div style={{ fontSize:13, fontWeight:700, color:'#92400E', marginBottom:8 }}>
-            📸 Vehicle Number Plate Photo (Required)
-          </div>
-          <div style={{ fontSize:12, color:'#92400E', opacity:0.8, marginBottom:10 }}>
-            Take a clear photo showing your vehicle with the number plate clearly visible. The plate number must match what you entered above.
-          </div>
-          <DocUpload docKey="vehicle_plate" label="Vehicle + Number Plate Photo" required />
-          {docs.vehicle_plate.done && (
-            <div onClick={()=>setPC(!plateConfirmed)}
-              style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 12px', background:'#fff', borderRadius:10, cursor:'pointer', marginTop:8 }}>
-              <div style={{ width:20, height:20, border:`2px solid ${plateConfirmed?'#16A34A':'#E0E0E0'}`, borderRadius:5, background:plateConfirmed?'#16A34A':'#fff', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                {plateConfirmed&&<span style={{ color:'#fff', fontSize:12, fontWeight:900 }}>✓</span>}
-              </div>
-              <span style={{ fontSize:12, color:'#555' }}>I confirm the plate in photo matches: <strong>{vehicleNo||'(enter plate above)'}</strong></span>
-            </div>
-          )}
-          {platErr&&<div style={{ color:'#DC2626', fontSize:12, marginTop:6 }}>{platErr}</div>}
-        </div>
-
-        {/* Driving licence */}
-        <div style={{ background:'#F0FDF4', border:'1px solid #BBF7D0', borderRadius:12, padding:'12px 14px', marginBottom:12 }}>
-          <div style={{ fontSize:13, fontWeight:700, color:'#16A34A', marginBottom:8 }}>
-            🪪 Driving Licence (Required)
-          </div>
-          <div style={{ marginBottom:10 }}>
-            <Inp val={licenseNo} set={v=>setLN(v.replace(/\s/g,'').toUpperCase())} ph="Licence number (e.g. WB0120201234567)" mono uppercase />
-            <div style={{ fontSize:11, color:'#888', marginTop:4 }}>State code + RTO code + Year + Serial (e.g. WB01 2020 1234567)</div>
-            {licErr&&<div style={{ color:'#DC2626', fontSize:12, marginTop:4 }}>{licErr}</div>}
-          </div>
-          <DocUpload docKey="license" label="Licence Front Side Photo" hint="Must clearly show licence number" required />
-          {docs.license.done && licenseNo.length >= 9 && (
-            <div onClick={()=>setLC(!licenseConfirmed)}
-              style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 12px', background:'#fff', borderRadius:10, cursor:'pointer', marginTop:8 }}>
-              <div style={{ width:20, height:20, border:`2px solid ${licenseConfirmed?'#16A34A':'#E0E0E0'}`, borderRadius:5, background:licenseConfirmed?'#16A34A':'#fff', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                {licenseConfirmed&&<span style={{ color:'#fff', fontSize:12, fontWeight:900 }}>✓</span>}
-              </div>
-              <span style={{ fontSize:12, color:'#555' }}>I confirm my licence number <strong>{licenseNo}</strong> matches the uploaded photo</span>
-            </div>
-          )}
-        </div>
-
-        {/* RC Book */}
-        <div style={{ marginBottom:12 }}>
-          <DocUpload docKey="rc" label="RC Book (Registration Certificate)" hint="Optional but recommended" />
-        </div>
-
-        {/* Profile Photo */}
-        <div style={{ marginBottom:16 }}>
-          <DocUpload docKey="photo" label="Profile Photo" hint="Clear face photo for passenger safety" />
-        </div>
-
-        {error&&<div style={{ color:'#DC2626', fontSize:13, marginBottom:14, padding:'10px 14px', background:'#FEF2F2', borderRadius:10 }}>{error}</div>}
-
-        <Btn label="Submit Application" fn={saveDriver} off={!vehicleModel.trim()||!vehicleNo.trim()||!licenseNo.trim()||!docs.license.done||!docs.vehicle_plate.done} />
-
-        <div style={{ marginTop:14, padding:'12px 14px', background:'#FFF7ED', border:'1px solid #FED7AA', borderRadius:12, fontSize:12, color:'#92400E', lineHeight:1.6 }}>
-          Your application will be reviewed within 24 hours. You will be notified once approved. Providing false documents will result in permanent ban.
-        </div>
+        <Btn label="Start Riding ->" fn={savePassenger} off={!name.trim()} />
       </div>
     </div>
   )
